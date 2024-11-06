@@ -1,0 +1,61 @@
+---
+- name: Playbook to upload Red Hat Discovery reports to Red Hat Insights
+  hosts: local
+  gather_facts: false
+  vars:
+    dsc_server: <your dsc ip address>
+    dsc_port: 9443
+    dsc_username: <your dsc username>
+    dsc_password: <your dsc password>
+  tasks:
+  - name: Ensure discovery-cli is installed
+    package:
+      name: discovery-cli
+      state: present
+    become: true
+
+  - name: Create missing config file
+    ansible.builtin.file:
+      path: "/home/{{ lookup('env','USER') }}/.config/qpc/server.config"
+
+  - name: Configure Discovery server
+    command: dsc server config --host "{{ dsc_server }}" --port "{{ dsc_port }}"
+
+  - name: Login to Discovery server
+    command: dsc server login --username "{{ dsc_username }}" --password "{{ dsc_password }}"
+
+  - name: Get list of existing scans
+    command: dsc scan list
+    register: scans
+
+  - name: Get list of scan reports
+    set_fact:
+      parsed_scans: "{{ scans.stdout_lines | join('') | from_json }}"
+
+  - name: Get list of completed scan reports
+    set_fact:
+      completed_scans: "{{ parsed_scans | selectattr('most_recent.status', 'equalto', 'completed') | list }}"
+
+  - name: Get list of report_ids
+    set_fact:
+      report_ids: "{{ completed_scans | map(attribute='jobs') | flatten | selectattr('report_id', 'defined') | map(attribute='report_id') | list }}"
+
+  - name: Download reports
+    command: dsc report insights --report "{{ item }}" --output-file "report{{ item }}.tar.gz"
+    with_items: "{{ report_ids }}"
+
+  - name: Upload reports to Insights
+    block:
+      - name: Upload reports to Insights
+        command: dsc insights publish --input-file "report{{ item }}.tar.gz"
+        register: upload_result
+        with_items: "{{ report_ids }}"
+        failed_when: upload_result.rc != 0
+    rescue:
+      - name: Instructions for login to Red Hat Insights
+        debug:
+          msg:
+          - "It looks like dsc is not authenticated with Red Hat Insights."
+          - "Please run the following command to authenticate: dsc insights login."
+          - "This will provide an Authorization URL that you need to follow to grant access to dsc."
+          - "Once authenticated, rerun this Ansible playbook."
