@@ -8,9 +8,11 @@
     dsc_username: <your dsc username>
     dsc_password: <your dsc password>
   tasks:
-  - name: Ensure discovery-cli is installed
+  - name: Ensure discovery-cli and tmux are installed
     package:
-      name: discovery-cli
+      name: 
+        - discovery-cli
+        - tmux
       state: present
     become: true
 
@@ -40,22 +42,35 @@
     set_fact:
       report_ids: "{{ completed_scans | map(attribute='jobs') | flatten | selectattr('report_id', 'defined') | map(attribute='report_id') | list }}"
 
-  - name: Download reports
-    command: dsc report insights --report "{{ item }}" --output-file "report{{ item }}.tar.gz"
-    with_items: "{{ report_ids }}"
+  - name: Remove existing tmux session
+    command: tmux kill-session -t insights-login
+    ignore_errors: yes
+
+  - name: Start tmux to login to Insights
+    command: tmux new-session -d -s insights-login 'dsc insights login'
+
+  - name: Pause 1 sec (give tmux and dsc the time to start)
+    pause:
+      seconds: 1
+
+  - name: Capture pane
+    command: /usr/bin/tmux capture-pane
+
+  - name: Save buffer
+    command: /usr/bin/tmux show-buffer
+    register: login_output
+
+  - name: Display authorization instructions
+    debug: msg="{{ login_output.stdout_lines }}"
+
+  - name: Complete instructions and press ENTER
+    pause:
+      prompt: Please visit the Authorization URL above to grant access to dsc. Then press ENTER to continue.
+
+  - name: Pause 1 sec (give dsc the time to get the Authorization token)
+    pause:
+      seconds: 1
 
   - name: Upload reports to Insights
-    block:
-      - name: Upload reports to Insights
-        command: dsc insights publish --input-file "report{{ item }}.tar.gz"
-        register: upload_result
-        with_items: "{{ report_ids }}"
-        failed_when: upload_result.rc != 0
-    rescue:
-      - name: Instructions for login to Red Hat Insights
-        debug:
-          msg:
-          - "It looks like dsc is not authenticated with Red Hat Insights."
-          - "Please run the following command to authenticate: dsc insights login."
-          - "This will provide an Authorization URL that you need to follow to grant access to dsc."
-          - "Once authenticated, rerun this Ansible playbook."
+    command: dsc insights publish --report {{ item }}
+    with_items: "{{ report_ids }}"
